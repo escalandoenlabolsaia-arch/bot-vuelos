@@ -1,2 +1,2 @@
-fast-flights
-requests
+fast-flights requests
+typing_extensions
