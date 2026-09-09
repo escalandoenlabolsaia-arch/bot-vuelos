@@ -1,0 +1,34 @@
+name: Bot Vuelos
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"    # cada 4 horas (hora UTC)
+  workflow_dispatch:          # botón para probarlo a mano
+
+permissions:
+  contents: write
+
+jobs:
+  buscar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - run: python bot_vuelos.py
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+
+      - name: Guardar histórico en el repo
+        run: |
+          git config user.name "bot-vuelos"
+          git config user.email "bot@users.noreply.github.com"
+          git add historico.csv ofertas_enviadas.csv
+          git diff --cached --quiet || git commit -m "actualizar historico"
+          git push
