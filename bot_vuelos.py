@@ -13,12 +13,12 @@ ORIGENES = ["BUE", "NYC"]  # códigos de ciudad: cubren todos los aeropuertos (E
 
 DESTINOS = {
     "América": ["NYC", "BUE", "MIA", "CUN", "PUJ", "RIO", "GRU", "SCL", "LIM", "BOG", "MEX"],
-    "Europa":  ["MAD", "BCN", "LIS", "ROM", "PAR", "LON", "AMS", "FRA", "IST", "ATH"],
+    "Europa":  ["MAD", "BCN", "LIS", "ROM", "PAR", "LON", "AMS", "FRA", "IST", "ATH", "FCO"],
     "Asia":    ["DXB", "TLV", "DEL", "BKK", "SIN", "HKG", "TYO", "SEL"],
 }
 
 DIAS_ADELANTE = [30, 60, 90, 120]   # busca salidas a 1, 2, 3 y 4 meses
-UMBRAL = 20        # % mínimo de baja para avisar
+UMBRAL = 35        # % mínimo de baja para avisar
 MIN_DATOS = 20     # registros históricos mínimos de una ruta antes de alertar
 HIST = "historico.csv"
 ENVIADAS = "ofertas_enviadas.csv"
