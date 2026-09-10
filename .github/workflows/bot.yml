@@ -2,7 +2,7 @@ name: Bot Vuelos
 
 on:
   schedule:
-    - cron: "0 */4 * * *"    # cada 4 horas (hora UTC)
+    - cron: "0 */6 * * *"    # cada 6 horas (hora UTC)
   workflow_dispatch:          # botón para probarlo a mano
 
 permissions:
