@@ -22,8 +22,7 @@ jobs:
 
       - run: python bot_vuelos.py
         env:
-          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
-          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
       - name: Guardar histórico en el repo
         run: |
