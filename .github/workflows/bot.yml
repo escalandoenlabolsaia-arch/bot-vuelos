@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
 
       - name: Instalar dependencias
-        run: pip install fast-flights requests typing_extensions
+        run: pip install "fast-flights<3" requests typing_extensions
 
       - name: Correr el bot
         env:
