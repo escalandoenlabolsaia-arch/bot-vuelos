@@ -40,6 +40,9 @@ PAUSA_ENTRE = 5
 PAUSA_REINTENTO = 8
 PAUSA_REINTENTO2 = 15
 
+# Diagnóstico: textos de "escalas" descartados por el filtro de directos
+escalas_descartadas = {}
+
 
 def elegir_anio(hoy):
     """(año a buscar, objetivo_ya_publicado)."""
@@ -94,9 +97,37 @@ def link_google(origen, destino, fecha_txt):
         f"vuelos de {origen} a {destino} el {fecha_txt} solo ida")
 
 
-def buscar_con_reintentos(origen, destino, fecha_txt, solo_directos):
-    """Hasta 2 intentos alternando modo. Devuelve (resultado, modo_usado)
-    o (None, razon) si todo falló."""
+def extraer_mejor(res, solo, destino):
+    """Mejor vuelo con precio real (> 0) que cumpla el filtro. None si no hay."""
+    mejor = None
+    for v in res.flights:
+        if not v.price:
+            continue
+        escala = getattr(v, "stops", None)
+        if solo and escala is not None and "nonstop" not in str(escala).lower():
+            escalas_descartadas.setdefault(destino, set()).add(str(escala))
+            continue
+        try:
+            precio = a_numero(v.price)
+        except ValueError:
+            continue
+        if precio <= 0:          # placeholders sin precio cargado: basura, se descarta
+            continue
+        if mejor is None or precio < mejor["precio"]:
+            mejor = {
+                "precio": precio,
+                "aerolinea": getattr(v, "name", "") or "",
+                "sale": getattr(v, "departure", "") or "",
+                "llega": getattr(v, "arrival", "") or "",
+                "escala": str(escala) if escala is not None else "",
+                "duracion": getattr(v, "duration", "") or "",
+            }
+    return mejor
+
+
+def buscar_mejor(origen, destino, fecha_txt, solo):
+    """Hasta 2 intentos alternando modo. Devuelve (mejor_vuelo, modo_usado)
+    o (None, razon). Reintenta también si la respuesta no trae precios usables."""
     ultimo_error = ""
     for i, modo in enumerate([MODO_PRINCIPAL, MODO_ALTERNO]):
         try:
@@ -106,10 +137,11 @@ def buscar_con_reintentos(origen, destino, fecha_txt, solo_directos):
                 passengers=Passengers(adults=1),
                 fetch_mode=modo,
             )
-            if res.flights:
-                return res, modo
-            ultimo_error = f"{modo}: sin resultados"
-            print(f"{origen}->{destino} {fecha_txt}: {modo} vino vacío, reintento...")
+            mejor = extraer_mejor(res, solo, destino)
+            if mejor:
+                return mejor, modo
+            ultimo_error = f"{modo}: sin precios utilizables"
+            print(f"{origen}->{destino} {fecha_txt}: {modo} sin precios utilizables, reintento...")
         except Exception as e:
             ultimo_error = f"{modo}: {e}"
             print(f"{origen}->{destino} {fecha_txt}: error ({e})")
@@ -166,12 +198,14 @@ crear_csv_si_falta(ENVIADAS, ["clave", "fecha_aviso"])
 
 rutas_nuestras = {(o, d) for o in ORIGENES for _, cods in DESTINOS.items() for d in cods}
 
-# Histórico: solo precios de la MISMA temporada que la ventana objetivo
+# Histórico: solo precios de la MISMA temporada y mayores a 0
+# (los $0 placeholders que quedaron guardados antes del arreglo se ignoran)
 precios_pasados = {}
 for fila in leer_filas(HIST):
     try:
-        if en_temporada(date.fromisoformat(fila[4][:10])):
-            precios_pasados.setdefault((fila[1], fila[2]), []).append(int(fila[5]))
+        p = int(fila[5])
+        if p > 0 and en_temporada(date.fromisoformat(fila[4][:10])):
+            precios_pasados.setdefault((fila[1], fila[2]), []).append(p)
     except (ValueError, IndexError):
         pass
 
@@ -192,7 +226,7 @@ else:
 
 ofertas = []
 busquedas_ok = 0
-exitos_modo = {MODO_PRINCIPAL: 0, MODO_ALTERNO: 0}
+exitos_modo = {}
 fallas_totales = 0
 minimos_hoy = []
 total_busquedas = len(ORIGENES) * sum(len(c) for c in DESTINOS.values()) * len(fechas)
@@ -203,60 +237,41 @@ for origen in ORIGENES:
             solo = DIRECTOS.get(destino, True)
             for fecha in fechas:
                 fecha_txt = fecha.isoformat()
-                res, modo = buscar_con_reintentos(origen, destino, fecha_txt, solo)
-                if res is None:
+                mejor, modo = buscar_mejor(origen, destino, fecha_txt, solo)
+                if mejor is None:
                     fallas_totales += 1
                     time.sleep(PAUSA_ENTRE)
                     continue
 
                 exitos_modo[modo] = exitos_modo.get(modo, 0) + 1
-                mejor = None
-                for v in res.flights:
-                    if not v.price:
-                        continue
-                    escala = getattr(v, "stops", None)
-                    if solo and escala is not None and "nonstop" not in str(escala).lower():
-                        continue
-                    try:
-                        precio = a_numero(v.price)
-                    except ValueError:
-                        continue
-                    if mejor is None or precio < mejor["precio"]:
-                        mejor = {
-                            "precio": precio,
-                            "aerolinea": getattr(v, "name", "") or "",
-                            "sale": getattr(v, "departure", "") or "",
-                            "llega": getattr(v, "arrival", "") or "",
-                            "escala": str(escala) if escala is not None else "",
-                            "duracion": getattr(v, "duration", "") or "",
-                        }
+                busquedas_ok += 1
+                agregar_fila(HIST, [datetime.now(), origen, destino, region, fecha_txt, mejor["precio"]])
+                minimos_hoy.append((mejor["precio"], f"{origen}->{destino} {fecha_txt}"))
 
-                if mejor:
-                    busquedas_ok += 1
-                    agregar_fila(HIST, [datetime.now(), origen, destino, region, fecha_txt, mejor["precio"]])
-                    minimos_hoy.append((mejor["precio"], f"{origen}->{destino} {fecha_txt}"))
-
-                    base = precios_pasados.get((origen, destino), [])
-                    if len(base) >= MIN_DATOS:
-                        mediana = round(statistics.median(base))
-                        if mediana > 0 and mejor["precio"] < mediana * (UMBRAL / 100):
-                            descuento = round((1 - mejor["precio"] / mediana) * 100)
-                            nivel = (descuento // 10) * 10
-                            clave = f"{origen}-{destino}-{fecha_txt}-{nivel}"
-                            if clave not in ofertas_ya_enviadas:
-                                mejor.update({
-                                    "origen": origen, "destino": destino, "region": region,
-                                    "fecha": fecha_txt, "mediana": mediana,
-                                    "descuento": descuento, "clave": clave,
-                                    "link": link_google(origen, destino, fecha_txt),
-                                })
-                                ofertas.append(mejor)
-                                print(f"OFERTA: {origen}->{destino} {fecha_txt} "
-                                      f"USD {mejor['precio']} (habitual ~{mediana}, -{descuento}%)")
+                base = precios_pasados.get((origen, destino), [])
+                if len(base) >= MIN_DATOS:
+                    mediana = round(statistics.median(base))
+                    if mediana > 0 and mejor["precio"] < mediana * (UMBRAL / 100):
+                        descuento = round((1 - mejor["precio"] / mediana) * 100)
+                        nivel = (descuento // 10) * 10
+                        clave = f"{origen}-{destino}-{fecha_txt}-{nivel}"
+                        if clave not in ofertas_ya_enviadas:
+                            mejor.update({
+                                "origen": origen, "destino": destino, "region": region,
+                                "fecha": fecha_txt, "mediana": mediana,
+                                "descuento": descuento, "clave": clave,
+                                "link": link_google(origen, destino, fecha_txt),
+                            })
+                            ofertas.append(mejor)
+                            print(f"OFERTA: {origen}->{destino} {fecha_txt} "
+                                  f"USD {mejor['precio']} (habitual ~{mediana}, -{descuento}%)")
                 time.sleep(PAUSA_ENTRE)  # pausa para no saturar a Google
 
 print(f"Búsquedas con datos: {busquedas_ok}/{total_busquedas}")
 print(f"Éxitos por modo: {exitos_modo} · fallas totales: {fallas_totales}")
+for destino, valores in escalas_descartadas.items():
+    muestra = ", ".join(sorted(valores)[:6])
+    print(f"Diagnóstico {destino} (descartados por filtro directos): {muestra}")
 for precio, ruta in sorted(minimos_hoy)[:5]:
     print(f"  mínimo {ruta}: USD {precio}")
 
@@ -278,13 +293,12 @@ if ofertas:
         agregar_fila(ENVIADAS, [o["clave"], datetime.now()])
     print(f"Enviadas {len(ofertas)} ofertas en un solo mensaje ✅")
 elif busquedas_ok == 0:
-    # Nada de datos: no molestar con mensajes, dejar la evidencia en el log
-    print("Corrida sin ningún dato (bloqueo o falla general). NO se envía mensaje.")
+    print("Corrida sin ningún dato utilizable (bloqueo o precios sin cargar). NO se envía mensaje.")
 elif not tenemos_historial:
     if publicado:
         texto = (
             "✈️ **Bot de vuelos activo**\n\n"
-            f"Primera corrida con datos: histórico inicial creado ({busquedas_ok} rutas/fechas).\n"
+            f"Primera corrida con precios reales: {busquedas_ok} rutas/fechas registradas.\n"
             f"Ventana: {inicio.strftime('%d/%m/%Y')} a {fin.strftime('%d/%m/%Y')} · "
             "FCO solo directos · TRN con escalas · ida.\n\n"
             "A partir de la próxima corrida aviso ofertas bajo el umbral. Silencio = sin ofertas."
