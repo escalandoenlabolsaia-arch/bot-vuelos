@@ -40,8 +40,22 @@ PAUSA_ENTRE = 5
 PAUSA_REINTENTO = 8
 PAUSA_REINTENTO2 = 15
 
-# Diagnóstico: textos de "escalas" descartados por el filtro de directos
+# Diagnóstico: valores de "escalas" descartados por el filtro de directos
 escalas_descartadas = {}
+
+
+def es_directo(escala):
+    """True si el vuelo no tiene escalas. La librería puede devolver el dato
+    como 'nonstop' (texto) o como número: 0 = directo, 1+ = con escalas."""
+    if escala is None:
+        return True
+    s = str(escala).lower()
+    if "nonstop" in s or "direct" in s:
+        return True
+    digitos = "".join(c for c in s if c.isdigit())
+    if digitos:
+        return int(digitos) == 0
+    return False
 
 
 def elegir_anio(hoy):
@@ -104,14 +118,14 @@ def extraer_mejor(res, solo, destino):
         if not v.price:
             continue
         escala = getattr(v, "stops", None)
-        if solo and escala is not None and "nonstop" not in str(escala).lower():
+        if solo and not es_directo(escala):
             escalas_descartadas.setdefault(destino, set()).add(str(escala))
             continue
         try:
             precio = a_numero(v.price)
         except ValueError:
             continue
-        if precio <= 0:          # placeholders sin precio cargado: basura, se descarta
+        if precio <= 0:          # placeholders sin precio cargado: se descartan
             continue
         if mejor is None or precio < mejor["precio"]:
             mejor = {
@@ -199,7 +213,6 @@ crear_csv_si_falta(ENVIADAS, ["clave", "fecha_aviso"])
 rutas_nuestras = {(o, d) for o in ORIGENES for _, cods in DESTINOS.items() for d in cods}
 
 # Histórico: solo precios de la MISMA temporada y mayores a 0
-# (los $0 placeholders que quedaron guardados antes del arreglo se ignoran)
 precios_pasados = {}
 for fila in leer_filas(HIST):
     try:
