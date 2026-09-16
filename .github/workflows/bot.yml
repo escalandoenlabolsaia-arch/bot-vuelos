@@ -25,9 +25,9 @@ jobs:
       - name: Instalar dependencias
         run: |
           pip install "fast-flights<3" "primp==0.14.0" requests typing_extensions
-          python -m playwright install --with-deps chromium \
+          pip install playwright && (python -m playwright install --with-deps chromium \
             || python -m playwright install chromium \
-            || echo "sin playwright: el modo local de respaldo queda deshabilitado"
+            || echo "navegador no instalado: respaldo local deshabilitado")
 
       - name: Correr el bot
         env:
