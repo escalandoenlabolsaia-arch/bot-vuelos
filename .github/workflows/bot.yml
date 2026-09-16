@@ -23,7 +23,11 @@ jobs:
           python-version: "3.12"
 
       - name: Instalar dependencias
-        run: pip install "fast-flights<3" "primp==0.14.0" requests typing_extensions
+        run: |
+          pip install "fast-flights<3" "primp==0.14.0" requests typing_extensions
+          python -m playwright install --with-deps chromium \
+            || python -m playwright install chromium \
+            || echo "sin playwright: el modo local de respaldo queda deshabilitado"
 
       - name: Correr el bot
         env:
