@@ -22,34 +22,59 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Instalar dependencias y hallar la versión compatible
+      - name: Instalar dependencias y hallar la combinación que funciona
         run: |
           pip install -q "fast-flights<3" requests typing_extensions
           python - <<'PY'
-          import subprocess, sys
+          import os, subprocess, sys
+          from datetime import date, timedelta
 
-          TEST = (
-              "from datetime import date, timedelta\n"
-              "from fast_flights import FlightData, Passengers, get_flights\n"
-              "fecha = (date.today() + timedelta(days=200)).isoformat()\n"
-              "r = get_flights(flight_data=[FlightData(date=fecha, from_airport='EZE', to_airport='FCO')], "
-              "trip='one-way', seat='economy', passengers=Passengers(adults=1), fetch_mode='fallback')\n"
-              "print('resultados:', len(r.flights))\n"
-              "raise SystemExit(0 if r.flights else 1)\n"
-          )
+          FECHA = (date.today() + timedelta(days=200)).isoformat()
+
+          def test(modo):
+              code = (
+                  "from fast_flights import FlightData, Passengers, get_flights\n"
+                  f"fecha = '{FECHA}'\n"
+                  "r = get_flights("
+                  "flight_data=[FlightData(date=fecha, from_airport='EZE', to_airport='FCO')], "
+                  "trip='one-way', seat='economy', passengers=Passengers(adults=1), "
+                  f"fetch_mode='{modo}')\n"
+                  "print('resultados:', len(r.flights))\n"
+                  "raise SystemExit(0 if r.flights else 1)\n"
+              )
+              try:
+                  p = subprocess.run([sys.executable, "-c", code], timeout=90,
+                                     capture_output=True, text=True)
+                  if p.returncode == 0:
+                      return True
+                  print("   fallo:", (p.stdout + p.stderr).strip()[:180])
+                  return False
+              except subprocess.TimeoutExpired:
+                  print("   sin respuesta en 90s, sigo")
+                  return False
 
           for v in ["0.14.0", "0.13.1", "0.12.0", "0.11.0", "0.10.0", "0.9.5", "0.8.2"]:
-              print(f"== Probando primp {v} ==")
-              if subprocess.run([sys.executable, "-m", "pip", "install", "-q", f"primp=={v}"]).returncode != 0:
-                  print("   (esa versión no existe, pruebo la siguiente)")
+              print(f"== Probando primp {v} ==", flush=True)
+              try:
+                  pip = subprocess.run([sys.executable, "-m", "pip", "install", "-q", f"primp=={v}"],
+                                       timeout=180, capture_output=True, text=True)
+              except subprocess.TimeoutExpired:
+                  print("   pip tardó demasiado, pruebo la siguiente")
                   continue
-              if subprocess.run([sys.executable, "-c", TEST]).returncode == 0:
-                  print("**************************************************")
-                  print(f"  VERSION QUE FUNCIONA: primp=={v}")
-                  print("**************************************************")
-                  sys.exit(0)
+              if pip.returncode != 0:
+                  print("   (esa versión no existe o no instaló; pruebo la siguiente)")
+                  continue
+              for modo in ("local", "fallback"):
+                  print(f"   probando modo {modo}...", flush=True)
+                  if test(modo):
+                      print("**************************************************")
+                      print(f"  VERSION QUE FUNCIONA: primp=={v}   MODO: {modo}")
+                      print("**************************************************")
+                      with open(os.environ["GITHUB_ENV"], "a") as f:
+                          f.write(f"FETCH_MODE={modo}\n")
+                      sys.exit(0)
 
-          print("Ninguna versión devolvió resultados de Google.")
+          print("Ninguna combinación devolvió resultados de Google.")
           print("Copiar este log completo y pegarlo en el chat.")
           sys.exit(1)
           PY
@@ -57,6 +82,7 @@ jobs:
       - name: Correr el bot
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          FETCH_MODE: ${{ env.FETCH_MODE }}
         run: python bot_vuelos.py
 
       - name: Guardar historial
