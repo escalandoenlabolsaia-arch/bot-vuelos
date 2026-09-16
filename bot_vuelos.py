@@ -15,19 +15,39 @@ ORIGENES = ["EZE"]                       # solo Ezeiza
 DESTINOS = {"Europa": ["FCO", "TRN"]}    # Roma Fiumicino, Turín
 SOLO_DIRECTOS = True                     # descarta vuelos con escalas
 
-FECHA_DESDE = date(2027, 4, 1)           # ventana fija de salidas
+# Ventana OBJETIVO (la que de verdad te interesa)
+FECHA_DESDE = date(2027, 4, 1)
 FECHA_HASTA = date(2027, 5, 30)
 
+# Google Flights no publica precios con más de ~11 meses de anticipación.
+# Si la ventana objetivo está más lejos, el bot entrena con la misma
+# temporada del año más cercano publicado y cambia solo cuando toque.
+MAX_ANTICIPACION = 330
+
 # --- Umbral de oferta ---
-# Alerta si el pasaje cuesta MENOS del 35% de su valor habitual
-# (ej.: habitual ~USD 600 -> alerta por debajo de ~USD 210).
-# Si querés ser menos exigente, subilo (50 = la mitad del habitual).
 UMBRAL = 35
 MIN_DATOS = 20      # registros históricos mínimos de una ruta antes de alertar
 
 HIST = "historico.csv"
 ENVIADAS = "ofertas_enviadas.csv"
 DEBUG = os.environ.get("DEBUG_VUELOS") == "1"
+
+
+def elegir_anio(hoy):
+    """(año a buscar, objetivo_ya_publicado)."""
+    if (FECHA_DESDE - hoy).days <= MAX_ANTICIPACION:
+        return FECHA_DESDE.year, True
+    y = FECHA_DESDE.year - 1
+    while y > 2000 and (date(y, FECHA_DESDE.month, FECHA_DESDE.day) - hoy).days > MAX_ANTICIPACION:
+        y -= 1
+    return y, False
+
+
+def en_temporada(fecha):
+    """True si la fecha cae en la ventana objetivo (mes y día, de cualquier año)."""
+    a = (FECHA_DESDE.month, FECHA_DESDE.day)
+    b = (FECHA_HASTA.month, FECHA_HASTA.day)
+    return a <= (fecha.month, fecha.day) <= b
 
 
 def a_numero(t):
@@ -52,8 +72,7 @@ def agregar_fila(archivo, fila):
 
 
 def link_google(origen, destino, fecha_txt):
-    """Link con la búsqueda precargada (ruta + fecha + ida + economía).
-    Entra directo a la lista de resultados, sin configurar nada."""
+    """Link con la búsqueda precargada (ruta + fecha + ida + economía)."""
     if url_create:
         try:
             return url_create(
@@ -116,10 +135,13 @@ crear_csv_si_falta(ENVIADAS, ["clave", "fecha_aviso"])
 
 rutas_nuestras = {(o, d) for o in ORIGENES for _, cods in DESTINOS.items() for d in cods}
 
-precios_pasados = {}   # {(origen, destino): [precios]}
+# Histórico: solo precios de la MISMA temporada que la ventana objetivo,
+# para que la comparación sea justa (abril con abril, no con septiembre)
+precios_pasados = {}
 for fila in leer_filas(HIST):
     try:
-        precios_pasados.setdefault((fila[1], fila[2]), []).append(int(fila[5]))
+        if en_temporada(date.fromisoformat(fila[4][:10])):
+            precios_pasados.setdefault((fila[1], fila[2]), []).append(int(fila[5]))
     except (ValueError, IndexError):
         pass
 
@@ -127,8 +149,16 @@ tenemos_historial = any(clave in precios_pasados for clave in rutas_nuestras)
 ofertas_ya_enviadas = {fila[0] for fila in leer_filas(ENVIADAS)}
 
 hoy = date.today()
-fechas = [FECHA_DESDE + timedelta(days=i)
-          for i in range((FECHA_HASTA - FECHA_DESDE).days + 1)]
+anio_busqueda, publicado = elegir_anio(hoy)
+inicio = date(anio_busqueda, FECHA_DESDE.month, FECHA_DESDE.day)
+fin = date(anio_busqueda, FECHA_HASTA.month, FECHA_HASTA.day)
+fechas = [inicio + timedelta(days=i) for i in range((fin - inicio).days + 1)]
+
+if publicado:
+    print(f"Ventana objetivo ya publicada: buscando {inicio} a {fin}")
+else:
+    print(f"Abr-may {FECHA_DESDE.year} aún sin precios en Google (publica ~11 meses antes).")
+    print(f"Modo entrenamiento: buscando la misma temporada en {anio_busqueda}.")
 
 ofertas = []
 busquedas_ok = 0
@@ -204,7 +234,7 @@ for precio, ruta in sorted(minimos_hoy)[:5]:
 # --- Envío: UN solo mensaje con todas las ofertas ---
 if ofertas:
     ofertas.sort(key=lambda o: -o["descuento"])
-    lineas = [f"✈️ **Ofertas ida EZE — salidas {FECHA_DESDE.strftime('%d/%m')} a {FECHA_HASTA.strftime('%d/%m/%Y')}**", ""]
+    lineas = [f"✈️ **Ofertas ida EZE — salidas {inicio.strftime('%d/%m')} a {fin.strftime('%d/%m/%Y')}**", ""]
     for o in ofertas:
         lineas.append(f"🟢 **EZE → {o['destino']} — {o['fecha']}**")
         lineas.append(f"USD {o['precio']} (habitual ~USD {o['mediana']} · **−{o['descuento']}%**)")
@@ -219,14 +249,26 @@ if ofertas:
         agregar_fila(ENVIADAS, [o["clave"], datetime.now()])
     print(f"Enviadas {len(ofertas)} ofertas en un solo mensaje ✅")
 elif not tenemos_historial:
-    # Primer corrida con el historial vacío para estas rutas: confirmamos que el bot funciona
-    enviar_ntfy(
-        "✈️ **Bot de vuelos activo**\n\n"
-        f"Primera corrida: histórico inicial creado ({busquedas_ok} rutas/fechas registradas).\n"
-        f"Ventana: {FECHA_DESDE.strftime('%d/%m/%Y')} a {FECHA_HASTA.strftime('%d/%m/%Y')} · "
-        "solo directos EZE → FCO/TRN · ida.\n\n"
-        "A partir de la próxima corrida aviso ofertas bajo el umbral. Silencio = sin ofertas."
-    )
+    if publicado:
+        texto = (
+            "✈️ **Bot de vuelos activo**\n\n"
+            f"Primera corrida: histórico inicial creado ({busquedas_ok} rutas/fechas registradas).\n"
+            f"Ventana: {inicio.strftime('%d/%m/%Y')} a {fin.strftime('%d/%m/%Y')} · "
+            "solo directos EZE → FCO/TRN · ida.\n\n"
+            "A partir de la próxima corrida aviso ofertas bajo el umbral. Silencio = sin ofertas."
+        )
+    else:
+        texto = (
+            "✈️ **Bot de vuelos activo — modo entrenamiento**\n\n"
+            f"Google Flights todavía no publica precios para abr-may {FECHA_DESDE.year} "
+            "(los publica ~11 meses antes). Mientras tanto vigila la misma temporada de "
+            f"{anio_busqueda} y construye el histórico para que las alertas de {FECHA_DESDE.year} "
+            "funcionen desde el día uno.\n"
+            f"Ventana actual: {inicio.strftime('%d/%m/%Y')} a {fin.strftime('%d/%m/%Y')} · "
+            "solo directos EZE → FCO/TRN · ida.\n\n"
+            "Si aparece una oferta real en esa ventana te aviso igual. Silencio = sin ofertas."
+        )
+    enviar_ntfy(texto)
 elif DEBUG:
     enviar_ntfy(
         f"🔍 DEBUG vuelos: {busquedas_ok}/{total_busquedas} búsquedas con datos. "
