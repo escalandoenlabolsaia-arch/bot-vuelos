@@ -2,11 +2,11 @@ name: Bot de vuelos
 
 on:
   schedule:
-    - cron: "0 9 * * *"   # todos los días 09:00 UTC (06:00 hora Argentina)
-  workflow_dispatch: {}    # permite probarlo a mano desde la pestaña Actions
+    - cron: "0 9 * * *"   # todos los días 09:00 UTC (06:00 Argentina)
+  workflow_dispatch: {}
 
 permissions:
-  contents: write          # necesario para poder guardar el historial en el repo
+  contents: write
 
 jobs:
   buscar:
@@ -15,15 +15,44 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # historial completo de git, necesario para commitear
+          fetch-depth: 0
 
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Instalar dependencias
-        run: pip install "fast-flights<3" requests typing_extensions
+      - name: Instalar dependencias y hallar la versión compatible
+        run: |
+          pip install -q "fast-flights<3" requests typing_extensions
+          python - <<'PY'
+          import subprocess, sys
+
+          TEST = (
+              "from datetime import date, timedelta\n"
+              "from fast_flights import FlightData, Passengers, get_flights\n"
+              "fecha = (date.today() + timedelta(days=200)).isoformat()\n"
+              "r = get_flights(flight_data=[FlightData(date=fecha, from_airport='EZE', to_airport='FCO')], "
+              "trip='one-way', seat='economy', passengers=Passengers(adults=1), fetch_mode='fallback')\n"
+              "print('resultados:', len(r.flights))\n"
+              "raise SystemExit(0 if r.flights else 1)\n"
+          )
+
+          for v in ["0.14.0", "0.13.1", "0.12.0", "0.11.0", "0.10.0", "0.9.5", "0.8.2"]:
+              print(f"== Probando primp {v} ==")
+              if subprocess.run([sys.executable, "-m", "pip", "install", "-q", f"primp=={v}"]).returncode != 0:
+                  print("   (esa versión no existe, pruebo la siguiente)")
+                  continue
+              if subprocess.run([sys.executable, "-c", TEST]).returncode == 0:
+                  print("**************************************************")
+                  print(f"  VERSION QUE FUNCIONA: primp=={v}")
+                  print("**************************************************")
+                  sys.exit(0)
+
+          print("Ninguna versión devolvió resultados de Google.")
+          print("Copiar este log completo y pegarlo en el chat.")
+          sys.exit(1)
+          PY
 
       - name: Correr el bot
         env:
