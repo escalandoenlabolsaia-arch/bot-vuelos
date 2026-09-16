@@ -10,6 +10,9 @@ try:
 except ImportError:
     url_create = None
 
+# Modo de consulta que eligió la prueba del workflow ("local" o "fallback")
+FETCH_MODE = os.environ.get("FETCH_MODE") or "fallback"
+
 # --- Búsqueda ---
 ORIGENES = ["EZE"]                       # solo Ezeiza
 DESTINOS = {"Europa": ["FCO", "TRN"]}    # Roma Fiumicino, Turín
@@ -20,8 +23,6 @@ FECHA_DESDE = date(2027, 4, 1)
 FECHA_HASTA = date(2027, 5, 30)
 
 # Google Flights no publica precios con más de ~11 meses de anticipación.
-# Si la ventana objetivo está más lejos, el bot entrena con la misma
-# temporada del año más cercano publicado y cambia solo cuando toque.
 MAX_ANTICIPACION = 330
 
 # --- Umbral de oferta ---
@@ -135,8 +136,7 @@ crear_csv_si_falta(ENVIADAS, ["clave", "fecha_aviso"])
 
 rutas_nuestras = {(o, d) for o in ORIGENES for _, cods in DESTINOS.items() for d in cods}
 
-# Histórico: solo precios de la MISMA temporada que la ventana objetivo,
-# para que la comparación sea justa (abril con abril, no con septiembre)
+# Histórico: solo precios de la MISMA temporada que la ventana objetivo
 precios_pasados = {}
 for fila in leer_filas(HIST):
     try:
@@ -154,6 +154,7 @@ inicio = date(anio_busqueda, FECHA_DESDE.month, FECHA_DESDE.day)
 fin = date(anio_busqueda, FECHA_HASTA.month, FECHA_HASTA.day)
 fechas = [inicio + timedelta(days=i) for i in range((fin - inicio).days + 1)]
 
+print(f"Modo de búsqueda: {FETCH_MODE}")
 if publicado:
     print(f"Ventana objetivo ya publicada: buscando {inicio} a {fin}")
 else:
@@ -175,7 +176,7 @@ for origen in ORIGENES:
                         flight_data=[FlightData(date=fecha_txt, from_airport=origen, to_airport=destino)],
                         trip="one-way", seat="economy",
                         passengers=Passengers(adults=1),
-                        fetch_mode="fallback",
+                        fetch_mode=FETCH_MODE,
                     )
                 except Exception as e:
                     print(f"{origen}->{destino} {fecha_txt}: error ({e})")
