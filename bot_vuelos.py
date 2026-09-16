@@ -10,13 +10,15 @@ try:
 except ImportError:
     url_create = None
 
-# Modo de consulta que eligió la prueba del workflow ("local" o "fallback")
-FETCH_MODE = os.environ.get("FETCH_MODE") or "fallback"
+# Modo preferido; si una búsqueda falla, se reintenta con el modo alterno
+MODO_PRINCIPAL = os.environ.get("FETCH_MODE") or "fallback"
+MODO_ALTERNO = "local" if MODO_PRINCIPAL == "fallback" else "fallback"
 
 # --- Búsqueda ---
 ORIGENES = ["EZE"]                       # solo Ezeiza
 DESTINOS = {"Europa": ["FCO", "TRN"]}    # Roma Fiumicino, Turín
-SOLO_DIRECTOS = True                     # descarta vuelos con escalas
+# Solo directos donde existen: EZE-TRN no tiene directos, ahí se permiten escalas
+DIRECTOS = {"FCO": True, "TRN": False}
 
 # Ventana OBJETIVO (la que de verdad te interesa)
 FECHA_DESDE = date(2027, 4, 1)
@@ -32,6 +34,11 @@ MIN_DATOS = 20      # registros históricos mínimos de una ruta antes de alerta
 HIST = "historico.csv"
 ENVIADAS = "ofertas_enviadas.csv"
 DEBUG = os.environ.get("DEBUG_VUELOS") == "1"
+
+# Pausas (segundos) — generosas para no despertar bloqueos
+PAUSA_ENTRE = 5
+PAUSA_REINTENTO = 8
+PAUSA_REINTENTO2 = 15
 
 
 def elegir_anio(hoy):
@@ -85,6 +92,29 @@ def link_google(origen, destino, fecha_txt):
             pass
     return "https://www.google.com/travel/flights?q=" + quote(
         f"vuelos de {origen} a {destino} el {fecha_txt} solo ida")
+
+
+def buscar_con_reintentos(origen, destino, fecha_txt, solo_directos):
+    """Hasta 2 intentos alternando modo. Devuelve (resultado, modo_usado)
+    o (None, razon) si todo falló."""
+    ultimo_error = ""
+    for i, modo in enumerate([MODO_PRINCIPAL, MODO_ALTERNO]):
+        try:
+            res = get_flights(
+                flight_data=[FlightData(date=fecha_txt, from_airport=origen, to_airport=destino)],
+                trip="one-way", seat="economy",
+                passengers=Passengers(adults=1),
+                fetch_mode=modo,
+            )
+            if res.flights:
+                return res, modo
+            ultimo_error = f"{modo}: sin resultados"
+            print(f"{origen}->{destino} {fecha_txt}: {modo} vino vacío, reintento...")
+        except Exception as e:
+            ultimo_error = f"{modo}: {e}"
+            print(f"{origen}->{destino} {fecha_txt}: error ({e})")
+        time.sleep(PAUSA_REINTENTO if i == 0 else PAUSA_REINTENTO2)
+    return None, ultimo_error
 
 
 def enviar_ntfy(texto):
@@ -154,41 +184,38 @@ inicio = date(anio_busqueda, FECHA_DESDE.month, FECHA_DESDE.day)
 fin = date(anio_busqueda, FECHA_HASTA.month, FECHA_HASTA.day)
 fechas = [inicio + timedelta(days=i) for i in range((fin - inicio).days + 1)]
 
-print(f"Modo de búsqueda: {FETCH_MODE}")
+print(f"Modos de búsqueda: {MODO_PRINCIPAL} (principal) + {MODO_ALTERNO} (respaldo)")
 if publicado:
     print(f"Ventana objetivo ya publicada: buscando {inicio} a {fin}")
 else:
-    print(f"Abr-may {FECHA_DESDE.year} aún sin precios en Google (publica ~11 meses antes).")
-    print(f"Modo entrenamiento: buscando la misma temporada en {anio_busqueda}.")
+    print(f"Abr-may {FECHA_DESDE.year} aún sin precios en Google. Entrenando con {anio_busqueda}.")
 
 ofertas = []
 busquedas_ok = 0
+exitos_modo = {MODO_PRINCIPAL: 0, MODO_ALTERNO: 0}
+fallas_totales = 0
 minimos_hoy = []
 total_busquedas = len(ORIGENES) * sum(len(c) for c in DESTINOS.values()) * len(fechas)
 
 for origen in ORIGENES:
     for region, codigos in DESTINOS.items():
         for destino in codigos:
+            solo = DIRECTOS.get(destino, True)
             for fecha in fechas:
                 fecha_txt = fecha.isoformat()
-                try:
-                    res = get_flights(
-                        flight_data=[FlightData(date=fecha_txt, from_airport=origen, to_airport=destino)],
-                        trip="one-way", seat="economy",
-                        passengers=Passengers(adults=1),
-                        fetch_mode=FETCH_MODE,
-                    )
-                except Exception as e:
-                    print(f"{origen}->{destino} {fecha_txt}: error ({e})")
-                    time.sleep(3)
+                res, modo = buscar_con_reintentos(origen, destino, fecha_txt, solo)
+                if res is None:
+                    fallas_totales += 1
+                    time.sleep(PAUSA_ENTRE)
                     continue
 
+                exitos_modo[modo] = exitos_modo.get(modo, 0) + 1
                 mejor = None
                 for v in res.flights:
                     if not v.price:
                         continue
                     escala = getattr(v, "stops", None)
-                    if SOLO_DIRECTOS and escala is not None and "nonstop" not in str(escala).lower():
+                    if solo and escala is not None and "nonstop" not in str(escala).lower():
                         continue
                     try:
                         precio = a_numero(v.price)
@@ -226,9 +253,10 @@ for origen in ORIGENES:
                                 ofertas.append(mejor)
                                 print(f"OFERTA: {origen}->{destino} {fecha_txt} "
                                       f"USD {mejor['precio']} (habitual ~{mediana}, -{descuento}%)")
-                time.sleep(2)  # pausa para no saturar a Google
+                time.sleep(PAUSA_ENTRE)  # pausa para no saturar a Google
 
 print(f"Búsquedas con datos: {busquedas_ok}/{total_busquedas}")
+print(f"Éxitos por modo: {exitos_modo} · fallas totales: {fallas_totales}")
 for precio, ruta in sorted(minimos_hoy)[:5]:
     print(f"  mínimo {ruta}: USD {precio}")
 
@@ -249,25 +277,25 @@ if ofertas:
     for o in ofertas:
         agregar_fila(ENVIADAS, [o["clave"], datetime.now()])
     print(f"Enviadas {len(ofertas)} ofertas en un solo mensaje ✅")
+elif busquedas_ok == 0:
+    # Nada de datos: no molestar con mensajes, dejar la evidencia en el log
+    print("Corrida sin ningún dato (bloqueo o falla general). NO se envía mensaje.")
 elif not tenemos_historial:
     if publicado:
         texto = (
             "✈️ **Bot de vuelos activo**\n\n"
-            f"Primera corrida: histórico inicial creado ({busquedas_ok} rutas/fechas registradas).\n"
+            f"Primera corrida con datos: histórico inicial creado ({busquedas_ok} rutas/fechas).\n"
             f"Ventana: {inicio.strftime('%d/%m/%Y')} a {fin.strftime('%d/%m/%Y')} · "
-            "solo directos EZE → FCO/TRN · ida.\n\n"
+            "FCO solo directos · TRN con escalas · ida.\n\n"
             "A partir de la próxima corrida aviso ofertas bajo el umbral. Silencio = sin ofertas."
         )
     else:
         texto = (
             "✈️ **Bot de vuelos activo — modo entrenamiento**\n\n"
-            f"Google Flights todavía no publica precios para abr-may {FECHA_DESDE.year} "
-            "(los publica ~11 meses antes). Mientras tanto vigila la misma temporada de "
-            f"{anio_busqueda} y construye el histórico para que las alertas de {FECHA_DESDE.year} "
-            "funcionen desde el día uno.\n"
-            f"Ventana actual: {inicio.strftime('%d/%m/%Y')} a {fin.strftime('%d/%m/%Y')} · "
-            "solo directos EZE → FCO/TRN · ida.\n\n"
-            "Si aparece una oferta real en esa ventana te aviso igual. Silencio = sin ofertas."
+            f"Google Flights todavía no publica precios para abr-may {FECHA_DESDE.year}. "
+            f"Vigilo la misma temporada de {anio_busqueda} y construyo el histórico.\n"
+            f"Ventana actual: {inicio.strftime('%d/%m/%Y')} a {fin.strftime('%d/%m/%Y')}.\n\n"
+            "Si aparece una oferta real te aviso igual. Silencio = sin ofertas."
         )
     enviar_ntfy(texto)
 elif DEBUG:
